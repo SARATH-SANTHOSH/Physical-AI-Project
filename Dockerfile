@@ -20,8 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application code
 COPY . .
 
+# Change working directory to where app.py and templates reside
+WORKDIR /app/app
+
 # Expose Flask port
 EXPOSE 5050
 
 # Run the application
-CMD ["python", "app/app.py"]
+CMD ["python", "app.py"]
