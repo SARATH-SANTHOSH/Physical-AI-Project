@@ -1,0 +1,11 @@
+services:
+  lora-gateway:
+    build: .
+    image: lora-unoq-gateway:latest
+    container_name: unoq_gateway
+    restart: always
+    ports:
+      - "5050:5050"
+    # Persist the sensor CSV data on the host machine
+    volumes:
+      - ./app/data:/app/app/data
