@@ -1,3 +1,4 @@
+# Standard-library modules used for files, JSON, regular expressions, and networking.
 import os
 import glob
 import json
@@ -7,6 +8,7 @@ import io
 import threading
 import time
 import socket
+# Third-party libraries handle data analysis, machine learning, charts, and PDFs.
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -27,16 +29,21 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
+# Flask uses this object to register routes and serve the web application.
 app = Flask(__name__)
+# Flask uses the secret key to sign the user's login session cookie.
 app.secret_key = 'lora_gateway_secret_key_change_me'
 
+# Keep the CSV beside the application so the path works both locally and in Docker.
 CSV_PATH = os.path.join(os.path.dirname(__file__), 'data', 'sensor_history.csv')
+# These column names define the format used by every row in the history file.
 CSV_HEADERS = [
     'timestamp', 'raw_payload', 'data_type', 
     'parsed_json', 'rssi', 'snr', 'is_anomaly', 'anomaly_reason'
 ]
 
 def init_csv():
+    """Create the history folder and CSV header when the file does not exist."""
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     if not os.path.exists(CSV_PATH) or os.path.getsize(CSV_PATH) == 0:
         with open(CSV_PATH, mode='w', newline='') as f:
@@ -49,7 +56,10 @@ init_csv()
 # Advanced AI: Dynamic Velocity Engine + EWMA Drift
 # -------------------------------------------------------------------
 class DynamicTrendMLModel:
+    """Parse telemetry and flag unusual temperature, humidity, and water readings."""
+
     def __init__(self, alpha=0.15):
+        # Alpha controls how quickly the exponentially weighted average reacts to new data.
         self.alpha = alpha
         self.ewma_temp = None
         self.ewma_hum = None
@@ -60,11 +70,14 @@ class DynamicTrendMLModel:
         self.temp_velocities = []
         self.hum_velocities = []
         
+        # Isolation Forest finds unusual combinations of temperature, humidity, and RSSI.
         self.iso_forest = IsolationForest(contamination=0.05, random_state=42)
         self.is_fitted = False
+        # Train from existing history when the application starts.
         self.fit_model()
 
     def fit_model(self):
+        """Train the outlier model when at least 15 complete readings are available."""
         if not os.path.exists(CSV_PATH) or os.path.getsize(CSV_PATH) == 0:
             return
         try:
@@ -72,6 +85,7 @@ class DynamicTrendMLModel:
             if 'parsed_json' not in df.columns:
                 return
 
+            # Only temperature/humidity rows have all features needed by this model.
             feature_rows = []
             for _, row in df.iterrows():
                 try:
@@ -89,10 +103,12 @@ class DynamicTrendMLModel:
             print(f"[ML Model Fit Error] {e}")
 
     def classify_and_parse(self, raw):
+        """Turn a device payload into a type label and a small dictionary of values."""
         raw = raw.strip()
         th_match = re.search(r'H:?\s*(\d+\.?\d*)%?\s*T:?\s*(\d+\.?\d*)C?', raw, re.IGNORECASE) or \
                    re.search(r'T:?\s*(\d+\.?\d*)C?\s*H:?\s*(\d+\.?\d*)%?', raw, re.IGNORECASE)
         if th_match:
+            # The regular expression accepts either H then T or T then H payloads.
             groups = th_match.groups()
             if "H:" in raw[:3].upper():
                 h, t = float(groups[0]), float(groups[1])
@@ -100,12 +116,14 @@ class DynamicTrendMLModel:
                 t, h = float(groups[0]), float(groups[1])
             return "Temp & Humidity", {"temperature": t, "humidity": h}
 
+        # A three-bit water probe value is converted to a human-readable percentage.
         level_match = re.search(r'Level:\s*([01]{3})', raw, re.IGNORECASE)
         if level_match:
             bits = level_match.group(1)
             percent = {"111": 100, "011": 66, "001": 33, "000": 0}.get(bits, -1)
             return "Water Level Probe", {"probe_bits": bits, "level_percent": percent}
 
+        # Count messages are kept as heartbeats/counter values.
         count_match = re.search(r'Count:\s*(\d+)', raw, re.IGNORECASE)
         if count_match:
             return "Counter / Heartbeat", {"count": int(count_match.group(1))}
@@ -113,6 +131,7 @@ class DynamicTrendMLModel:
         return "Unclassified Raw Data", {"raw": raw}
 
     def detect_anomaly(self, timestamp_str, data_type, parsed, rssi):
+        """Check a parsed reading against limits, recent movement, and the ML model."""
         is_anomaly = 0
         reasons = []
 
@@ -125,12 +144,14 @@ class DynamicTrendMLModel:
             except Exception:
                 curr_ts = datetime.now()
 
+            # Compare this reading with the previous one to detect sudden changes over time.
             if self.last_ts is not None and self.last_temp is not None and self.last_hum is not None:
                 time_delta_min = max((curr_ts - self.last_ts).total_seconds() / 60.0, 0.001)
 
                 temp_vel = (temp - self.last_temp) / time_delta_min
                 hum_vel = (hum - self.last_hum) / time_delta_min
 
+                # Wait for five previous changes so the average and standard deviation are useful.
                 if len(self.temp_velocities) >= 5:
                     mean_v_temp = np.mean(self.temp_velocities)
                     std_v_temp = np.std(self.temp_velocities) + 1e-5
@@ -145,12 +166,14 @@ class DynamicTrendMLModel:
                         is_anomaly = 1
                         reasons.append(f"Sudden Humidity Shift ({hum_vel:+.1f}%/min)")
 
+                # Keep only the most recent 50 velocity values so old data cannot dominate.
                 self.temp_velocities.append(temp_vel)
                 self.hum_velocities.append(hum_vel)
                 if len(self.temp_velocities) > 50:
                     self.temp_velocities.pop(0)
                     self.hum_velocities.pop(0)
 
+                # Update the smoothed values after calculating the current change.
                 self.ewma_temp = (self.alpha * temp) + ((1 - self.alpha) * self.ewma_temp)
                 self.ewma_hum = (self.alpha * hum) + ((1 - self.alpha) * self.ewma_hum)
             else:
@@ -161,6 +184,7 @@ class DynamicTrendMLModel:
             self.last_temp = temp
             self.last_hum = hum
 
+            # Use the trained model only when enough historical data existed at startup.
             if self.is_fitted:
                 features = np.array([[temp, hum, rssi]])
                 if self.iso_forest.predict(features)[0] == -1:
@@ -176,12 +200,14 @@ class DynamicTrendMLModel:
                 is_anomaly = 1
                 reasons.append("Tank Empty Warning")
 
+        # Store all explanations in one field so they can be shown in the dashboard and PDF.
         reason_str = " | ".join(reasons) if is_anomaly else "Normal"
         return is_anomaly, reason_str
 
 ml_engine = DynamicTrendMLModel()
 
 def store_to_csv(raw, rssi, snr):
+    """Parse one device message, analyze it, and append the result to the CSV."""
     init_csv()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     data_type, parsed = ml_engine.classify_and_parse(raw)
@@ -197,9 +223,11 @@ def store_to_csv(raw, rssi, snr):
 # TCP Socket Reader Thread (replaces Serial)
 # -------------------------------------------------------------------
 def tcp_bridge_reader_thread():
+    """Keep receiving newline-delimited JSON messages from the LoRa TCP bridge."""
     host = '127.0.0.1'
     port = 7500
     
+    # The loop reconnects forever, allowing the dashboard to survive bridge restarts.
     while True:
         try:
             print(f"Connecting to LoRa bridge at {host}:{port}...")
@@ -207,6 +235,7 @@ def tcp_bridge_reader_thread():
                 s.connect((host, port))
                 print(f"[TCP Bridge] Connected successfully to {host}:{port}")
                 
+                # TCP may split one message across packets, so collect text until a newline.
                 buffer = ""
                 while True:
                     data = s.recv(1024)
@@ -215,6 +244,7 @@ def tcp_bridge_reader_thread():
                         break
                     
                     buffer += data.decode('utf-8', errors='ignore')
+                    # Process every complete JSON line currently waiting in the buffer.
                     while '\n' in buffer:
                         line, buffer = buffer.split('\n', 1)
                         line = line.strip()
@@ -232,6 +262,7 @@ def tcp_bridge_reader_thread():
             print(f"LoRa connection error: {e}. Retrying in 5 seconds...")
             time.sleep(5)
 
+# Start the reader in a daemon thread so it stops automatically with the Flask process.
 if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
     threading.Thread(target=tcp_bridge_reader_thread, daemon=True).start()
 
@@ -239,6 +270,7 @@ if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
 # Auth Guard & Routes
 # -------------------------------------------------------------------
 def login_required(f):
+    """Allow a route to run only after the user has logged in."""
     def wrapper(*args, **kwargs):
         if not session.get('logged_in'):
             return redirect(url_for('login'))
@@ -248,6 +280,7 @@ def login_required(f):
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """Display the login form and create a session for valid development credentials."""
     if request.method == 'POST':
         if request.form.get('username') == 'admin' and request.form.get('password') == 'admin123':
             session['logged_in'] = True
@@ -258,28 +291,33 @@ def login():
 
 @app.route('/logout')
 def logout():
+    """Remove the login session and return the user to the login page."""
     session.clear()
     return redirect(url_for('login'))
 
 @app.route('/')
 @login_required
 def index():
+    """Render the live dashboard page."""
     return render_template('index.html')
 
 @app.route('/history')
 @login_required
 def history():
+    """Render the historical readings page."""
     return render_template('history.html')
 
 @app.route('/analytics')
 @login_required
 def analytics():
+    """Render the analytics page."""
     return render_template('analytics.html')
 
 # -------------------------------------------------------------------
 # PDF Chart Helper
 # -------------------------------------------------------------------
 def generate_chart_image(timestamps, values, title, ylabel, color):
+    """Create an in-memory chart image for embedding in the PDF report."""
     fig, ax = plt.subplots(figsize=(6, 2.2), dpi=150)
     fig.patch.set_facecolor('#1e293b')
     ax.set_facecolor('#0f172a')
@@ -291,6 +329,7 @@ def generate_chart_image(timestamps, values, title, ylabel, color):
     ax.tick_params(colors='#94a3b8', labelsize=7)
     ax.grid(True, color='#334155', linestyle='--', linewidth=0.5)
     
+    # Show only a few x-axis labels so timestamps remain readable in the small chart.
     if len(timestamps) > 6:
         step = len(timestamps) // 5
         ax.set_xticks(range(0, len(timestamps), step))
@@ -312,6 +351,7 @@ def generate_chart_image(timestamps, values, title, ylabel, color):
 @app.route('/download_report')
 @login_required
 def download_report():
+    """Build a PDF summary containing charts and the latest telemetry records."""
     records = parse_csv_dataframe()
     buffer = io.BytesIO()
     
@@ -328,6 +368,7 @@ def download_report():
     elements.append(Paragraph(f"Generated On: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Total Readings: {len(records)}", meta_style))
     elements.append(Spacer(1, 12))
     
+    # Calculate summary values before constructing the report tables.
     total_anomalies = sum(1 for r in records if r['is_anomaly'] == 1)
     temps = [r['parsed'].get('temperature') for r in records if 'temperature' in r['parsed']]
     avg_temp = f"{np.mean(temps):.1f}°C" if temps else "N/A"
@@ -352,6 +393,7 @@ def download_report():
         elements.append(Paragraph("<b>Telemetry Analytics Trends</b>", styles['Heading3']))
         elements.append(Spacer(1, 6))
 
+        # Limit charts and details to recent records so the PDF stays manageable.
         timestamps = [r['timestamp'] for r in records[-40:]]
         temp_vals = [r['parsed'].get('temperature', 0) for r in records[-40:]]
         hum_vals = [r['parsed'].get('humidity', 0) for r in records[-40:]]
@@ -402,6 +444,7 @@ def download_report():
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#94a3b8')),
     ]
     
+    # Highlight anomalous rows in red to make them easy to find in the report.
     for i, r in enumerate(records[-50:], start=1):
         if r['is_anomaly'] == 1:
             ts_style.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fee2e2')))
@@ -424,16 +467,19 @@ def download_report():
 # Data APIs
 # -------------------------------------------------------------------
 def parse_csv_dataframe(limit=None):
+    """Read CSV history and convert each row into JSON-friendly Python values."""
     init_csv()
     try:
         df = pd.read_csv(CSV_PATH)
         if df.empty or 'timestamp' not in df.columns:
             return []
         
+        # tail() keeps the newest readings when an API asks for a limited result.
         if limit:
             df = df.tail(limit)
 
         records = []
+        # Convert pandas values to normal Python types before Flask serializes them.
         for _, r in df.iterrows():
             try:
                 parsed = json.loads(r['parsed_json'])
@@ -457,12 +503,15 @@ def parse_csv_dataframe(limit=None):
 @app.route('/api/data')
 @login_required
 def get_data():
+    """Return the latest 100 records, newest first, for the dashboard JavaScript."""
     return jsonify(list(reversed(parse_csv_dataframe(limit=100))))
 
 @app.route('/api/history_all')
 @login_required
 def get_all_history():
+    """Return the complete telemetry history for the history page."""
     return jsonify(parse_csv_dataframe())
 
 if __name__ == '__main__':
+    # Bind to all interfaces so Docker and other devices can reach the web server.
     app.run(host='0.0.0.0', port=5050, debug=True, use_reloader=False)
