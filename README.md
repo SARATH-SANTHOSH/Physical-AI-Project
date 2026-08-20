@@ -128,6 +128,69 @@ The TCP bridge should send one JSON object per line with `payload`, `rssi`, and 
 - Confirm that the LoRa bridge is listening on `127.0.0.1:7500` from the same network namespace as the Flask process.
 - If no bridge is connected, the dashboard still starts and can display existing CSV data.
 
+# LoRa SX1278 Receiver with Arduino Router Bridge
+
+This project implements a LoRa receiver node using an **SX1278** module (managed via the **RadioLib** library) paired with an Arduino board utilizing the **Arduino_RouterBridge** framework. Incoming LoRa packets are parsed, wrapped into a JSON payload containing the message along with **RSSI** and **SNR** metrics, exposed via an RPC bridge endpoint (`getLatestPayload`), and acknowledged back to the sender.
+
+---
+
+## 📋 Hardware Requirements
+
+* 1x Microcontroller board supporting `Arduino_RouterBridge` (e.g., Arduino Uno Q)
+* 1x SX1278 LoRa Transceiver Module (433MHz)
+* Connecting jumper wires
+* Breadboard
+
+---
+
+## 🔌 Connection Details (Pinout)
+
+The pin mappings are defined directly in the code macros. Wire your SX1278 module to your Arduino board according to the mapping table below:
+
+| SX1278 Pin | Arduino Pin | Description |
+| :--- | :--- | :--- |
+| **NSS (CS)** | Pin `10` | SPI Chip Select |
+| **DIO0** | Pin `2` | Digital I/O 0 (RX/TX done interrupt) |
+| **RESET** | Pin `9` | Module Reset |
+| **BUSY** | Not Connected (`NC`) | Flow Control (Left unconnected for SX1278) |
+| **SCK** | SPI SCK Pin | Hardware SPI Clock |
+| **MISO** | SPI MISO Pin | Hardware SPI Master In Slave Out |
+| **MOSI** | SPI MOSI Pin | Hardware SPI Master Out Slave In |
+| **GND** | Ground (`GND`) | Common Ground |
+| **3.3V** | `3.3V` Output | Power Supply (**Warning: Do not use 5V**) |
+
+> **Important Power Note:** Always power the SX1278 module using the **3.3V** rail of your microcontroller. Supplying 5V to the VCC or logic pins of the SX1278 will permanently damage the module.
+
+---
+
+## ⚙️ Software Dependencies
+
+Before compiling and uploading the sketch, ensure you have installed the following libraries via the Arduino IDE Library Manager:
+
+1. **RadioLib** (by Jan Gromeš) — For communicating with the SX1278 LoRa module.
+2. **Arduino_RouterBridge** — For handling RPC communication between the microcontroller and the router/host environment.
+
+---
+
+## 🚀 How It Works
+
+1. **Initialization:** Sets up the bridge interface and initializes the SX1278 radio module on `433.0 MHz`, with a bandwidth of `125.0 kHz`, spreading factor `7`, coding rate `5`, sync word `0x12`, and output power of `10 dBm`.
+2. **RPC Exposure:** Registers the `getLatestPayload` function via `Bridge.provide()`, allowing external processes or high-level scripts to fetch the latest parsed JSON package synchronously.
+3. **Packet Reception:** Listens continuously for incoming packets. If a packet is received, it extracts the string payload, measures the **RSSI** and **SNR**, formats it into a clean JSON string, prints it to the monitor stream, and responds back to the transmitter with an `"ok"` acknowledgment.
+
+---
+
+## 📄 JSON Output Format
+
+When a valid packet is received, the system generates and caches a JSON string structure matching this format:
+
+```json
+{
+  "payload": "Your received message",
+  "rssi": -85.00,
+  "snr": 6.25
+}
+
 ## License
 
 No license is currently specified. Add a license before distributing this project.
